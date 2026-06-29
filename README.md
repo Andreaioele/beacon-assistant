@@ -66,6 +66,34 @@ localhost:5432
 The local `knowledge-base/` folder is mounted into the app container at `/app/knowledge-base`.
 Put Markdown help-center files there for containerized runs.
 
+## Railway
+
+Railway deploy config lives in `railway.toml` and uses the project `Dockerfile`.
+
+Expected Railway services:
+
+- Web service from this repository.
+- PostgreSQL service connected to the web service.
+
+Required web service variables:
+
+- `DATABASE_URL` from the Railway PostgreSQL service.
+- `SECRET_KEY_BASE` generated with `mix phx.gen.secret`.
+- `PHX_SERVER=true`.
+- `LLM_PROVIDER`.
+- `LLM_API_KEY`.
+- `LLM_MODEL`.
+- `LLM_TIMEOUT_MS=15000`.
+- `KNOWLEDGE_BASE_DIR=/app/knowledge-base`.
+
+Railway should provide `PORT` and `RAILWAY_PUBLIC_DOMAIN`.
+
+Local Railway CLI/MCP auth placeholder:
+
+```bash
+export RAILWAY_TOKEN=replace-with-railway-token
+```
+
 ## Environment
 
 Copy `.env.example` for local shell usage if needed. Do not commit real secrets.
@@ -74,6 +102,7 @@ Required later for production:
 
 - `DATABASE_URL`
 - `SECRET_KEY_BASE`
+- `RAILWAY_TOKEN` for local Railway CLI/MCP operations
 - `LLM_PROVIDER`
 - `LLM_API_KEY`
 - `LLM_MODEL`

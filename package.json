@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "railway:mcp": "railway mcp",
+    "railway:mcp:install": "railway mcp install --agent codex"
+  },
+  "devDependencies": {
+    "@railway/cli": "^5.23.1"
+  }
+}

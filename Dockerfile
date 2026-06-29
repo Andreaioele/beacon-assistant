@@ -41,6 +41,7 @@ ENV HOME=/app \
     PORT=4000
 
 COPY --from=build /app/_build/prod/rel/beacon_assistant ./
+COPY knowledge-base ./knowledge-base
 
 EXPOSE 4000
 
