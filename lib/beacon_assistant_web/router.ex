@@ -15,6 +15,10 @@ defmodule BeaconAssistantWeb.Router do
   end
 
   scope "/", BeaconAssistantWeb do
+    get "/health", HealthController, :show
+  end
+
+  scope "/", BeaconAssistantWeb do
     pipe_through :browser
 
     live "/", ChatLive, :index
