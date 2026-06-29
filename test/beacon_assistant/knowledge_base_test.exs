@@ -45,7 +45,8 @@ defmodule BeaconAssistant.KnowledgeBaseTest do
   end
 
   defp tmp_dir do
-    dir = Path.join(System.tmp_dir!(), "beacon-kb-test-#{System.unique_integer([:positive])}")
+    suffix = "#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+    dir = Path.join(System.tmp_dir!(), "beacon-kb-test-#{suffix}")
     File.mkdir_p!(dir)
     dir
   end
