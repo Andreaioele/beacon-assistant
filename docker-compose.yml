@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PHX_SERVER: "true"
+      PHX_HOST: localhost
+      PORT: "4000"
+      DATABASE_URL: ecto://postgres:postgres@db:5432/beacon_assistant_dev
+      SECRET_KEY_BASE: 7lZjWnHTwQFpKNAkV1R3R9FplmEnQLg4MGhdd5t6pMGv4h8pSpPhbnWvx2kW8M10
+      LLM_PROVIDER: openai
+      LLM_API_KEY: ""
+      LLM_MODEL: ""
+      LLM_TIMEOUT_MS: "15000"
+      KNOWLEDGE_BASE_DIR: /app/knowledge-base
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./knowledge-base:/app/knowledge-base:ro
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: beacon_assistant_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d beacon_assistant_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

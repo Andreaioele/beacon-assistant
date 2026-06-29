@@ -1,0 +1,4 @@
+interface:
+  display_name: "Elixir Architecture Review"
+  short_description: "Review Beacon Elixir architecture."
+  default_prompt: "Use this skill to review Beacon Elixir/Phoenix architecture. Read AGENTS.md first."

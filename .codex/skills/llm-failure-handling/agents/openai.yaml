@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Failure Handling"
+  short_description: "Harden Beacon LLM failures."
+  default_prompt: "Use this skill when implementing or reviewing Beacon LLM provider calls and failure handling. Read AGENTS.md first."

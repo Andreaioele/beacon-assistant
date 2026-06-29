@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deployment Checklist"
+  short_description: "Check Beacon deploy readiness."
+  default_prompt: "Use this skill to verify Beacon deployment readiness. Read AGENTS.md first."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Transcript Manager"
+  short_description: "Track Beacon AI agent evidence."
+  default_prompt: "Use this skill to organize Beacon AI agent usage evidence and transcripts. Read AGENTS.md first."

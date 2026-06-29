@@ -1,0 +1,4 @@
+interface:
+  display_name: "README Decisions Writer"
+  short_description: "Write Beacon README and decisions."
+  default_prompt: "Use this skill to update Beacon README.md and DECISIONS.md. Read AGENTS.md first."

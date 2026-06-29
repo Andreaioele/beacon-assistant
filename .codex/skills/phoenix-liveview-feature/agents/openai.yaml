@@ -1,0 +1,4 @@
+interface:
+  display_name: "Phoenix LiveView Feature"
+  short_description: "Build thin Beacon LiveView features."
+  default_prompt: "Use this skill to implement or modify a Beacon Phoenix LiveView feature. Read AGENTS.md first."
