@@ -13,10 +13,12 @@ services:
       PORT: "4000"
       DATABASE_URL: ecto://postgres:postgres@db:5432/beacon_assistant_dev
       SECRET_KEY_BASE: 7lZjWnHTwQFpKNAkV1R3R9FplmEnQLg4MGhdd5t6pMGv4h8pSpPhbnWvx2kW8M10
-      LLM_PROVIDER: openai
+      LLM_PROVIDER: ollama
       LLM_API_KEY: ""
       LLM_MODEL: ""
       LLM_TIMEOUT_MS: "15000"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen3:14b
       KNOWLEDGE_BASE_DIR: /app/knowledge-base
     ports:
       - "4000:4000"
