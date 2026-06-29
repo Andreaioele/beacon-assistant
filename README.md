@@ -149,3 +149,9 @@ Required for production:
 - `BeaconAssistant.Conversations` will own exchange persistence.
 
 Markdown help-center files belong in `priv/knowledge_base/` for local source runs or `knowledge-base/` for Docker runs.
+
+## Decisions
+
+- **Local & Production LLMs**: We used a local model via Ollama for zero-cost local testing and development. In production, we use an API key for a cloud model (GPT-5 Nano) which offers an excellent cost-to-performance ratio. This choice was dictated by the need to balance costs and the required performance.
+- **Dynamic Configuration**: The choice of the LLM provider and model is completely dynamic and controlled via environment variables. This ensures that if we ever want to switch models or providers in the future, we only need to update the configuration without modifying the code.
+- **Hosting**: We chose Railway as our hosting provider because it allows us to deploy the application and integrate a PostgreSQL database with just a few clicks.
