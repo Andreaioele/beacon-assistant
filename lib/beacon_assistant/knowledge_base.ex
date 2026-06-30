@@ -61,7 +61,7 @@ defmodule BeaconAssistant.KnowledgeBase do
   def knowledge_base_dir do
     System.get_env("KNOWLEDGE_BASE_DIR") ||
       Application.get_env(:beacon_assistant, :knowledge_base_dir) ||
-      Path.expand("../../knowledge-base", __DIR__)
+      Application.app_dir(:beacon_assistant, "priv/knowledge_base")
   end
 
   defp markdown_paths(dir) do
