@@ -1,14 +1,18 @@
 defmodule BeaconAssistantWeb.ChatLive do
   use BeaconAssistantWeb, :live_view
 
-  alias BeaconAssistant.Chatbot
+  alias BeaconAssistant.{Chatbot, Conversations}
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    chat_session_id = chat_session_id(session)
+    exchanges = load_exchanges(chat_session_id)
+
     socket =
       assign(socket,
         page_title: "Beacon Support Assistant",
-        exchanges: [],
+        chat_session_id: chat_session_id,
+        exchanges: exchanges,
         loading: false,
         error: nil,
         form: to_form(%{"question" => ""}, as: :chat)
@@ -100,7 +104,7 @@ defmodule BeaconAssistantWeb.ChatLive do
   end
 
   defp ask_and_assign(socket, question) do
-    case Chatbot.ask(question) do
+    case Chatbot.ask(question, chat_session_id: socket.assigns.chat_session_id) do
       {:ok, exchange} ->
         assign(socket,
           exchanges: socket.assigns.exchanges ++ [exchange],
@@ -110,6 +114,18 @@ defmodule BeaconAssistantWeb.ChatLive do
 
       {:error, :empty_question} ->
         assign(socket, loading: false, error: "Enter a question before sending.")
+    end
+  end
+
+  defp chat_session_id(session) do
+    Map.get(session, "chat_session_id") || Map.get(session, :chat_session_id) ||
+      Ecto.UUID.generate()
+  end
+
+  defp load_exchanges(chat_session_id) do
+    case Conversations.get_or_create_session(chat_session_id) do
+      {:ok, session} -> Conversations.list_exchanges_for_session(session.id)
+      {:error, _reason} -> []
     end
   end
 end
