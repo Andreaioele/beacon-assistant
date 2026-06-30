@@ -8,8 +8,14 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
   setup do
     previous = Application.get_env(:beacon_assistant, :chatbot_complete)
 
-    Application.put_env(:beacon_assistant, :chatbot_complete, fn _prompt ->
-      {:ok, "Billing is handled from the knowledge base."}
+    Application.put_env(:beacon_assistant, :chatbot_complete, fn prompt ->
+      assert prompt =~ "Return a JSON object only"
+
+      {:ok,
+       Jason.encode!(%{
+         answer: "Billing is handled from the knowledge base.",
+         sources: ["03-billing-and-refunds.md"]
+       })}
     end)
 
     on_exit(fn ->
@@ -38,6 +44,9 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
     assert html =~ "how billing works"
     assert html =~ "Billing is handled from the knowledge base."
+    assert html =~ "Sources used:"
+    assert html =~ "03-billing-and-refunds.md"
+    refute html =~ "04-account-and-security.md"
   end
 
   test "submitting multiple questions in the same browser session persists exchanges", %{

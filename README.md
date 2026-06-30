@@ -84,8 +84,8 @@ The database is exposed at:
 localhost:5432
 ```
 
-The local `knowledge-base/` folder is mounted into the app container at `/app/knowledge-base`.
-Put Markdown help-center files there for containerized runs.
+Containerized runs use the Markdown help-center files bundled in `priv/knowledge_base/`,
+matching the Railway image behavior.
 
 Docker runs use the configured LLM environment variables. For Ollama on the host machine, set `OLLAMA_GENERATE_URL` to:
 

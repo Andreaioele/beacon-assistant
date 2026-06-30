@@ -40,10 +40,14 @@ defmodule BeaconAssistant.Chatbot do
     #{question}
 
     Instructions:
+    - Return a JSON object only, with this exact shape:
+      {"answer":"...","sources":["filename.md"]}
     - Answer only from the context above.
     - Do not guess.
     - Do not invent Beacon policies, pricing, billing behavior, security behavior, or support procedures.
     - If the answer is not present, use the exact fallback sentence above.
+    - Include only document filenames actually used to answer in sources.
+    - If the answer is the fallback sentence, sources must be an empty array.
     - Prefer a direct answer over a long explanation.
     """
     |> String.trim()
@@ -76,9 +80,11 @@ defmodule BeaconAssistant.Chatbot do
 
     Logger.info("chatbot.ask started question=#{inspect(question)}")
 
-    with {:ok, %{context: context, sources: sources}} <- build_context.(),
+    with {:ok, %{context: context, sources: available_sources}} <- build_context.(),
          prompt <- build_prompt(question, context),
-         {:ok, answer, metrics} <- call_complete(complete, prompt) do
+         {:ok, raw_answer, metrics} <- call_complete(complete, prompt) do
+      %{answer: answer, sources: sources} = parse_completion(raw_answer, available_sources)
+
       Logger.info(
         "chatbot.ask completed sources=#{inspect(sources)} answer_bytes=#{byte_size(answer)}"
       )
@@ -129,6 +135,40 @@ defmodule BeaconAssistant.Chatbot do
         {:error, reason}
     end
   end
+
+  defp parse_completion(raw_answer, available_sources) do
+    case Jason.decode(raw_answer) do
+      {:ok, %{"answer" => answer} = body} when is_binary(answer) ->
+        answer = String.trim(answer)
+
+        %{
+          answer: answer,
+          sources: validated_sources(answer, Map.get(body, "sources", []), available_sources)
+        }
+
+      _other ->
+        Logger.warning("chatbot.ask unstructured_answer using_empty_sources")
+        %{answer: raw_answer, sources: []}
+    end
+  end
+
+  defp validated_sources(answer, _declared_sources, _available_sources)
+       when answer == @knowledge_base_fallback do
+    []
+  end
+
+  defp validated_sources(_answer, declared_sources, available_sources)
+       when is_list(declared_sources) do
+    available_sources = MapSet.new(available_sources)
+
+    declared_sources
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&MapSet.member?(available_sources, &1))
+    |> Enum.uniq()
+  end
+
+  defp validated_sources(_answer, _declared_sources, _available_sources), do: []
 
   defp maybe_persist_exchange(nil, exchange, _metrics), do: {:ok, exchange}
   defp maybe_persist_exchange("", exchange, _metrics), do: {:ok, exchange}

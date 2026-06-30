@@ -76,7 +76,7 @@ defmodule BeaconAssistantWeb.ChatLive do
             </p>
             <p class="mt-1 whitespace-pre-wrap text-sm leading-6">{exchange.answer}</p>
             <p :if={exchange.sources != []} class="mt-3 text-xs text-base-content/55">
-              Sources: {Enum.join(exchange.sources, ", ")}
+              Sources used: {Enum.join(exchange.sources, ", ")}
             </p>
           </div>
         </article>
