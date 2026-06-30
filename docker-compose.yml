@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    command: ["/bin/sh", "-c", "/app/bin/migrate && /app/bin/server"]
     depends_on:
       db:
         condition: service_healthy

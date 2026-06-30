@@ -84,11 +84,11 @@ if config_env() == :prod do
   config :beacon_assistant, BeaconAssistantWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # Bind on all IPv4 interfaces so Docker port publishing works reliably on
+      # local machines and Railway can route traffic to the container.
+      ip: {0, 0, 0, 0}
       # See the documentation on https://bandit.hexdocs.pm/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
     secret_key_base: secret_key_base
 
