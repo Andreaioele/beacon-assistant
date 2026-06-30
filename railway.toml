@@ -3,7 +3,8 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "/app/bin/beacon_assistant start"
+preDeployCommand = "/app/bin/migrate"
+startCommand = "/app/bin/server"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
