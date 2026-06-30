@@ -12,6 +12,13 @@ defmodule BeaconAssistant.LLMClient do
   require Logger
 
   def complete(prompt, opts \\ []) when is_binary(prompt) do
+    case complete_with_metadata(prompt, opts) do
+      {:ok, %{answer: answer}} -> {:ok, answer}
+      {:error, reason, _metadata} -> {:error, reason}
+    end
+  end
+
+  def complete_with_metadata(prompt, opts \\ []) when is_binary(prompt) do
     http_client = Keyword.get(opts, :http_client, &Req.post/2)
 
     case provider(opts) do
@@ -21,7 +28,7 @@ defmodule BeaconAssistant.LLMClient do
   rescue
     exception ->
       Logger.error("llm_client.complete raised error=#{Exception.message(exception)}")
-      {:error, :llm_request_failed}
+      {:error, :llm_request_failed, %{prompt_bytes: byte_size(prompt)}}
   end
 
   defp complete_openai(prompt, http_client, opts) do
@@ -34,11 +41,11 @@ defmodule BeaconAssistant.LLMClient do
     cond do
       blank?(api_key) ->
         Logger.error("llm_client.complete missing OpenAI API key")
-        {:error, :missing_api_key}
+        {:error, :missing_api_key, base_metadata(:openai, model, prompt, nil)}
 
       blank?(model) ->
         Logger.error("llm_client.complete missing OpenAI model")
-        {:error, :missing_model}
+        {:error, :missing_model, base_metadata(:openai, model, prompt, nil)}
 
       true ->
         case request_openai_completion(
@@ -50,7 +57,7 @@ defmodule BeaconAssistant.LLMClient do
                timeout_ms,
                :primary
              ) do
-          {:error, reason} = error ->
+          {:error, reason, _metadata} = error ->
             if model_unavailable_error?(reason) and not blank?(fallback_model) do
               Logger.warning(
                 "llm_client.complete primary_model_unavailable model=#{model} fallback_model=#{fallback_model}"
@@ -63,7 +70,8 @@ defmodule BeaconAssistant.LLMClient do
                 api_key,
                 fallback_model,
                 timeout_ms,
-                :fallback
+                :fallback,
+                true
               )
             else
               if model_unavailable_error?(reason) do
@@ -88,7 +96,8 @@ defmodule BeaconAssistant.LLMClient do
          api_key,
          model,
          timeout_ms,
-         attempt
+         attempt,
+         fallback_used \\ false
        ) do
     request_opts = [
       headers: [{"authorization", "Bearer #{api_key}"}],
@@ -100,13 +109,24 @@ defmodule BeaconAssistant.LLMClient do
       "llm_client.complete request provider=openai attempt=#{attempt} endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
     )
 
+    started_at = System.monotonic_time(:millisecond)
+
     case http_client.(endpoint, request_opts) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+      {:ok, %Req.Response{status: status, body: body} = response} when status in 200..299 ->
         Logger.info(
           "llm_client.complete response provider=openai attempt=#{attempt} status=#{status}"
         )
 
-        parse_openai_success_body(body)
+        metadata =
+          base_metadata(:openai, model, prompt, elapsed_ms(started_at))
+          |> Map.put(:fallback_used, fallback_used)
+          |> Map.merge(openai_usage_metadata(body))
+          |> Map.put(:provider_request_id, provider_request_id(response))
+
+        case parse_openai_success_body(body) do
+          {:ok, answer} -> {:ok, Map.put(metadata, :answer, answer)}
+          {:error, reason} -> {:error, reason, metadata}
+        end
 
       {:ok, %Req.Response{status: status, body: body}} ->
         reason = openai_http_error_reason(status, body)
@@ -115,25 +135,32 @@ defmodule BeaconAssistant.LLMClient do
           "llm_client.complete http_error provider=openai attempt=#{attempt} status=#{status}"
         )
 
-        {:error, reason}
+        metadata =
+          base_metadata(:openai, model, prompt, elapsed_ms(started_at))
+          |> Map.put(:fallback_used, fallback_used)
+
+        {:error, reason, metadata}
 
       {:error, %Req.TransportError{reason: reason}} ->
         Logger.error(
           "llm_client.complete transport_error provider=openai attempt=#{attempt} reason=#{inspect(reason)}"
         )
 
-        {:error, {:transport_error, reason}}
+        {:error, {:transport_error, reason},
+         base_metadata(:openai, model, prompt, elapsed_ms(started_at))}
 
       {:error, reason} ->
         Logger.error(
           "llm_client.complete client_error provider=openai attempt=#{attempt} reason=#{inspect(reason)}"
         )
 
-        {:error, reason}
+        {:error, reason, base_metadata(:openai, model, prompt, elapsed_ms(started_at))}
 
       _other ->
         Logger.error("llm_client.complete unexpected_response provider=openai attempt=#{attempt}")
-        {:error, :unexpected_response}
+
+        {:error, :unexpected_response,
+         base_metadata(:openai, model, prompt, elapsed_ms(started_at))}
     end
   end
 
@@ -155,30 +182,46 @@ defmodule BeaconAssistant.LLMClient do
       "llm_client.complete request provider=ollama endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
     )
 
-    request_completion(http_client, endpoint, request_opts, &parse_ollama_success_body/1)
+    request_ollama_completion(http_client, endpoint, request_opts, prompt, model)
   end
 
-  defp request_completion(http_client, endpoint, request_opts, parse_success_body) do
+  defp request_ollama_completion(http_client, endpoint, request_opts, prompt, model) do
+    started_at = System.monotonic_time(:millisecond)
+
     case http_client.(endpoint, request_opts) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         Logger.info("llm_client.complete response status=#{status}")
-        parse_success_body.(body)
+
+        metadata =
+          base_metadata(:ollama, model, prompt, elapsed_ms(started_at))
+          |> Map.merge(ollama_usage_metadata(body))
+
+        case parse_ollama_success_body(body) do
+          {:ok, answer} -> {:ok, Map.put(metadata, :answer, answer)}
+          {:error, reason} -> {:error, reason, metadata}
+        end
 
       {:ok, %Req.Response{status: status}} ->
         Logger.error("llm_client.complete http_error status=#{status}")
-        {:error, {:http_error, status}}
+
+        {:error, {:http_error, status},
+         base_metadata(:ollama, model, prompt, elapsed_ms(started_at))}
 
       {:error, %Req.TransportError{reason: reason}} ->
         Logger.error("llm_client.complete transport_error reason=#{inspect(reason)}")
-        {:error, {:transport_error, reason}}
+
+        {:error, {:transport_error, reason},
+         base_metadata(:ollama, model, prompt, elapsed_ms(started_at))}
 
       {:error, reason} ->
         Logger.error("llm_client.complete client_error reason=#{inspect(reason)}")
-        {:error, reason}
+        {:error, reason, base_metadata(:ollama, model, prompt, elapsed_ms(started_at))}
 
       _other ->
         Logger.error("llm_client.complete unexpected_response")
-        {:error, :unexpected_response}
+
+        {:error, :unexpected_response,
+         base_metadata(:ollama, model, prompt, elapsed_ms(started_at))}
     end
   end
 
@@ -223,6 +266,107 @@ defmodule BeaconAssistant.LLMClient do
   defp parse_openai_success_body(body) do
     Logger.error("llm_client.complete malformed_response body=#{inspect(body)}")
     {:error, :malformed_response}
+  end
+
+  defp base_metadata(provider, model, prompt, response_time_ms) do
+    %{
+      provider: to_string(provider),
+      model_name: model,
+      input_tokens: nil,
+      output_tokens: nil,
+      total_tokens: nil,
+      response_time_ms: response_time_ms,
+      prompt_bytes: byte_size(prompt),
+      provider_request_id: nil,
+      fallback_used: false
+    }
+  end
+
+  defp openai_usage_metadata(%{"usage" => usage}) when is_map(usage) do
+    input_tokens = token_value(usage, ["input_tokens", "prompt_tokens"])
+    output_tokens = token_value(usage, ["output_tokens", "completion_tokens"])
+
+    %{
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: token_value(usage, ["total_tokens"]) || token_sum(input_tokens, output_tokens)
+    }
+  end
+
+  defp openai_usage_metadata(_body), do: %{}
+
+  defp ollama_usage_metadata(body) when is_map(body) do
+    input_tokens = token_value(body, ["prompt_eval_count"])
+    output_tokens = token_value(body, ["eval_count"])
+
+    %{
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      total_tokens: token_sum(input_tokens, output_tokens)
+    }
+  end
+
+  defp ollama_usage_metadata(_body), do: %{}
+
+  defp provider_request_id(%Req.Response{headers: headers, body: body}) do
+    header_value(headers, "x-request-id") ||
+      header_value(headers, "openai-request-id") ||
+      body_value(body, "request_id") ||
+      body_value(body, "id")
+  end
+
+  defp header_value(headers, key) when is_map(headers) do
+    case Map.get(headers, key) || Map.get(headers, String.downcase(key)) do
+      [value | _rest] when is_binary(value) -> value
+      value when is_binary(value) -> value
+      _other -> nil
+    end
+  end
+
+  defp header_value(headers, key) when is_list(headers) do
+    headers
+    |> Enum.find_value(fn
+      {header_key, value} when is_binary(header_key) ->
+        if String.downcase(header_key) == key, do: header_list_value(value)
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp header_value(_headers, _key), do: nil
+
+  defp header_list_value([value | _rest]) when is_binary(value), do: value
+  defp header_list_value(value) when is_binary(value), do: value
+  defp header_list_value(_value), do: nil
+
+  defp body_value(body, key) when is_map(body) do
+    case Map.get(body, key) do
+      value when is_binary(value) -> value
+      _other -> nil
+    end
+  end
+
+  defp body_value(_body, _key), do: nil
+
+  defp token_value(map, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(map, key) do
+        value when is_integer(value) and value >= 0 -> value
+        _other -> nil
+      end
+    end)
+  end
+
+  defp token_sum(input_tokens, output_tokens)
+       when is_integer(input_tokens) and is_integer(output_tokens) do
+    input_tokens + output_tokens
+  end
+
+  defp token_sum(_input_tokens, _output_tokens), do: nil
+
+  defp elapsed_ms(started_at) do
+    System.monotonic_time(:millisecond) - started_at
   end
 
   defp provider(opts) do

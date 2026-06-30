@@ -77,6 +77,40 @@ defmodule BeaconAssistant.LLMClientTest do
     refute_received {:request, _url, _opts}
   end
 
+  test "returns OpenAI answer with metadata" do
+    http_client = fn _url, _opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         headers: %{"x-request-id" => ["req_123"]},
+         body: %{
+           "output" => [
+             %{"content" => [%{"type" => "output_text", "text" => " OpenAI answer. "}]}
+           ],
+           "usage" => %{"input_tokens" => 11, "output_tokens" => 7, "total_tokens" => 18}
+         }
+       }}
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.complete_with_metadata("prompt",
+               http_client: http_client,
+               provider: "openai",
+               api_key: "test-key",
+               model: "gpt-test"
+             )
+
+    assert metadata.answer == "OpenAI answer."
+    assert metadata.provider == "openai"
+    assert metadata.model_name == "gpt-test"
+    assert metadata.input_tokens == 11
+    assert metadata.output_tokens == 7
+    assert metadata.total_tokens == 18
+    assert metadata.prompt_bytes == byte_size("prompt")
+    assert is_integer(metadata.response_time_ms)
+    assert metadata.provider_request_id == "req_123"
+  end
+
   test "retries OpenAI request with fallback model when primary model is unavailable" do
     parent = self()
 
@@ -118,6 +152,45 @@ defmodule BeaconAssistant.LLMClientTest do
 
     assert_received {:request, "https://api.openai.com/v1/responses", fallback_opts}
     assert fallback_opts[:json] == %{model: "fallback-test", input: "prompt"}
+  end
+
+  test "OpenAI metadata records fallback model when fallback answers" do
+    http_client = fn _url, opts ->
+      case opts[:json].model do
+        "primary-test" ->
+          {:ok,
+           %Req.Response{
+             status: 404,
+             body: %{"error" => %{"code" => "model_not_found"}}
+           }}
+
+        "fallback-test" ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "output" => [
+                 %{"content" => [%{"type" => "output_text", "text" => " Fallback answer. "}]}
+               ],
+               "usage" => %{"input_tokens" => 5, "output_tokens" => 6}
+             }
+           }}
+      end
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.complete_with_metadata("prompt",
+               http_client: http_client,
+               provider: "openai",
+               api_key: "test-key",
+               model: "primary-test",
+               fallback_model: "fallback-test"
+             )
+
+    assert metadata.answer == "Fallback answer."
+    assert metadata.model_name == "fallback-test"
+    assert metadata.fallback_used == true
+    assert metadata.total_tokens == 11
   end
 
   test "does not retry OpenAI model unavailable response when fallback model is blank" do
@@ -261,6 +334,36 @@ defmodule BeaconAssistant.LLMClientTest do
 
     assert {:error, :empty_response} =
              LLMClient.complete("prompt", http_client: empty, provider: "ollama")
+  end
+
+  test "returns Ollama answer with eval count metadata" do
+    http_client = fn _url, _opts ->
+      {:ok,
+       %Req.Response{
+         status: 200,
+         body: %{
+           "response" => " Local answer. ",
+           "prompt_eval_count" => 13,
+           "eval_count" => 9
+         }
+       }}
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.complete_with_metadata("prompt",
+               http_client: http_client,
+               provider: "ollama",
+               model: "qwen3:14b"
+             )
+
+    assert metadata.answer == "Local answer."
+    assert metadata.provider == "ollama"
+    assert metadata.model_name == "qwen3:14b"
+    assert metadata.input_tokens == 13
+    assert metadata.output_tokens == 9
+    assert metadata.total_tokens == 22
+    assert metadata.prompt_bytes == byte_size("prompt")
+    assert is_integer(metadata.response_time_ms)
   end
 
   test "handles malformed and empty OpenAI responses" do

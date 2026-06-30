@@ -3,6 +3,8 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias BeaconAssistant.Conversations
+
   setup do
     previous = Application.get_env(:beacon_assistant, :chatbot_complete)
 
@@ -36,6 +38,55 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
     assert html =~ "how billing works"
     assert html =~ "Billing is handled from the knowledge base."
+  end
+
+  test "submitting multiple questions in the same browser session persists exchanges", %{
+    conn: conn
+  } do
+    session_id = Ecto.UUID.generate()
+    conn = init_test_session(conn, %{chat_session_id: session_id})
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    view
+    |> form("form", chat: %{question: "how billing works"})
+    |> render_submit()
+
+    view
+    |> form("form", chat: %{question: "how do refunds work"})
+    |> render_submit()
+
+    exchanges = Conversations.list_exchanges_for_session(session_id)
+
+    assert Enum.map(exchanges, & &1.question) == [
+             "how billing works",
+             "how do refunds work"
+           ]
+
+    assert Enum.all?(exchanges, &(&1.status == "completed"))
+  end
+
+  test "reload with same session renders previous exchanges", %{conn: conn} do
+    session_id = Ecto.UUID.generate()
+
+    assert {:ok, _session} = Conversations.get_or_create_session(session_id)
+
+    assert {:ok, _exchange} =
+             Conversations.create_exchange(%{
+               chat_session_id: session_id,
+               question: "previous question",
+               answer: "previous answer",
+               status: "completed",
+               sources: ["source.md"]
+             })
+
+    conn = init_test_session(conn, %{chat_session_id: session_id})
+
+    {:ok, _view, html} = live(conn, ~p"/")
+
+    assert html =~ "previous question"
+    assert html =~ "previous answer"
+    assert html =~ "source.md"
   end
 
   test "empty question is ignored with validation message", %{conn: conn} do
