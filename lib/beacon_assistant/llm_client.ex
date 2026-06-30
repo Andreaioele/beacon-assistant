@@ -3,12 +3,6 @@ defmodule BeaconAssistant.LLMClient do
   Boundary for LLM completion calls.
   """
 
-  @default_provider "ollama"
-  @default_ollama_model "qwen3:14b"
-  @default_ollama_base_url "http://localhost:11434"
-  @default_openai_endpoint "https://api.openai.com/v1/responses"
-  @default_timeout_ms 120_000
-
   require Logger
 
   def complete(prompt, opts \\ []) when is_binary(prompt) do
@@ -22,8 +16,10 @@ defmodule BeaconAssistant.LLMClient do
     http_client = Keyword.get(opts, :http_client, &Req.post/2)
 
     case provider(opts) do
+      "" -> {:error, :missing_provider, %{prompt_bytes: byte_size(prompt)}}
       "openai" -> complete_openai(prompt, http_client, opts)
-      _provider -> complete_ollama(prompt, http_client, opts)
+      "ollama" -> complete_ollama(prompt, http_client, opts)
+      provider -> {:error, {:unsupported_provider, provider}, %{prompt_bytes: byte_size(prompt)}}
     end
   rescue
     exception ->
@@ -39,6 +35,10 @@ defmodule BeaconAssistant.LLMClient do
     timeout_ms = Keyword.get(opts, :timeout_ms, llm_timeout_ms())
 
     cond do
+      blank?(endpoint) ->
+        Logger.error("llm_client.complete missing OpenAI endpoint")
+        {:error, :missing_endpoint, base_metadata(:openai, model, prompt, nil)}
+
       blank?(api_key) ->
         Logger.error("llm_client.complete missing OpenAI API key")
         {:error, :missing_api_key, base_metadata(:openai, model, prompt, nil)}
@@ -46,6 +46,10 @@ defmodule BeaconAssistant.LLMClient do
       blank?(model) ->
         Logger.error("llm_client.complete missing OpenAI model")
         {:error, :missing_model, base_metadata(:openai, model, prompt, nil)}
+
+      invalid_timeout?(timeout_ms) ->
+        Logger.error("llm_client.complete missing OpenAI timeout")
+        {:error, :missing_timeout, base_metadata(:openai, model, prompt, nil)}
 
       true ->
         case request_openai_completion(
@@ -169,20 +173,35 @@ defmodule BeaconAssistant.LLMClient do
     model = Keyword.get(opts, :model, ollama_model())
     timeout_ms = Keyword.get(opts, :timeout_ms, ollama_timeout_ms())
 
-    request_opts = [
-      json: %{
-        model: model,
-        prompt: prompt,
-        stream: false
-      },
-      receive_timeout: timeout_ms
-    ]
+    cond do
+      blank?(endpoint) ->
+        Logger.error("llm_client.complete missing Ollama endpoint")
+        {:error, :missing_endpoint, base_metadata(:ollama, model, prompt, nil)}
 
-    Logger.info(
-      "llm_client.complete request provider=ollama endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
-    )
+      blank?(model) ->
+        Logger.error("llm_client.complete missing Ollama model")
+        {:error, :missing_model, base_metadata(:ollama, model, prompt, nil)}
 
-    request_ollama_completion(http_client, endpoint, request_opts, prompt, model)
+      invalid_timeout?(timeout_ms) ->
+        Logger.error("llm_client.complete missing Ollama timeout")
+        {:error, :missing_timeout, base_metadata(:ollama, model, prompt, nil)}
+
+      true ->
+        request_opts = [
+          json: %{
+            model: model,
+            prompt: prompt,
+            stream: false
+          },
+          receive_timeout: timeout_ms
+        ]
+
+        Logger.info(
+          "llm_client.complete request provider=ollama endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
+        )
+
+        request_ollama_completion(http_client, endpoint, request_opts, prompt, model)
+    end
   end
 
   defp request_ollama_completion(http_client, endpoint, request_opts, prompt, model) do
@@ -373,7 +392,7 @@ defmodule BeaconAssistant.LLMClient do
     opts
     |> Keyword.get(
       :provider,
-      System.get_env("LLM_PROVIDER") || llm_config(:provider) || @default_provider
+      llm_config(:provider)
     )
     |> to_string()
     |> String.trim()
@@ -381,21 +400,19 @@ defmodule BeaconAssistant.LLMClient do
   end
 
   defp openai_endpoint do
-    System.get_env("OPENAI_RESPONSES_URL") ||
-      llm_config(:openai_responses_url) ||
-      @default_openai_endpoint
+    llm_config(:openai_responses_url)
   end
 
   defp openai_api_key do
-    System.get_env("LLM_API_KEY") || llm_config(:api_key)
+    llm_config(:api_key)
   end
 
   defp openai_model do
-    System.get_env("LLM_MODEL") || llm_config(:model)
+    llm_config(:model)
   end
 
   defp openai_fallback_model do
-    System.get_env("LLM_FALLBACK_MODEL") || llm_config(:fallback_model)
+    llm_config(:fallback_model)
   end
 
   defp openai_http_error_reason(status, body) do
@@ -423,44 +440,19 @@ defmodule BeaconAssistant.LLMClient do
   defp model_unavailable_error?(_reason), do: false
 
   defp ollama_endpoint do
-    generate_url =
-      System.get_env("OLLAMA_GENERATE_URL") ||
-        Application.get_env(:beacon_assistant, :ollama_generate_url)
-
-    if generate_url do
-      String.trim_trailing(generate_url, "/")
-    else
-      base_url =
-        System.get_env("OLLAMA_BASE_URL") ||
-          Application.get_env(:beacon_assistant, :ollama_base_url) ||
-          @default_ollama_base_url
-
-      base_url
-      |> String.trim_trailing("/")
-      |> String.replace_suffix("/v1", "")
-      |> Kernel.<>("/api/generate")
-    end
+    llm_config(:ollama_generate_url)
   end
 
   defp ollama_model do
-    System.get_env("OLLAMA_MODEL") ||
-      Application.get_env(:beacon_assistant, :ollama_model) ||
-      @default_ollama_model
+    llm_config(:ollama_model)
   end
 
   defp ollama_timeout_ms do
-    case System.get_env("OLLAMA_TIMEOUT_MS") do
-      nil -> Application.get_env(:beacon_assistant, :ollama_timeout_ms, @default_timeout_ms)
-      value -> parse_timeout(value)
-    end
+    llm_config(:ollama_timeout_ms)
   end
 
   defp llm_timeout_ms do
-    case System.get_env("LLM_TIMEOUT_MS") || llm_config(:timeout_ms) do
-      nil -> @default_timeout_ms
-      timeout when is_integer(timeout) and timeout > 0 -> timeout
-      value -> parse_timeout(to_string(value))
-    end
+    llm_config(:timeout_ms)
   end
 
   defp llm_config(key) do
@@ -472,10 +464,5 @@ defmodule BeaconAssistant.LLMClient do
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(value), do: is_nil(value)
 
-  defp parse_timeout(value) do
-    case Integer.parse(value) do
-      {timeout, ""} when timeout > 0 -> timeout
-      _ -> @default_timeout_ms
-    end
-  end
+  defp invalid_timeout?(timeout), do: not (is_integer(timeout) and timeout > 0)
 end

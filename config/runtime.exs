@@ -20,12 +20,29 @@ if System.get_env("PHX_SERVER") do
   config :beacon_assistant, BeaconAssistantWeb.Endpoint, server: true
 end
 
+parse_positive_integer = fn env_name ->
+  case System.get_env(env_name) do
+    nil ->
+      nil
+
+    value ->
+      case Integer.parse(value) do
+        {integer, ""} when integer > 0 -> integer
+        _invalid -> nil
+      end
+  end
+end
+
 config :beacon_assistant, :llm,
-  provider: System.get_env("LLM_PROVIDER", "ollama"),
+  provider: System.get_env("LLM_PROVIDER"),
   api_key: System.get_env("LLM_API_KEY"),
   model: System.get_env("LLM_MODEL"),
   fallback_model: System.get_env("LLM_FALLBACK_MODEL"),
-  timeout_ms: String.to_integer(System.get_env("LLM_TIMEOUT_MS", "15000"))
+  timeout_ms: parse_positive_integer.("LLM_TIMEOUT_MS"),
+  openai_responses_url: System.get_env("OPENAI_RESPONSES_URL"),
+  ollama_generate_url: System.get_env("OLLAMA_GENERATE_URL"),
+  ollama_model: System.get_env("OLLAMA_MODEL"),
+  ollama_timeout_ms: parse_positive_integer.("OLLAMA_TIMEOUT_MS")
 
 config :beacon_assistant, BeaconAssistantWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
