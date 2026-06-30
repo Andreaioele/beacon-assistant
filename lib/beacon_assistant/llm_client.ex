@@ -27,6 +27,7 @@ defmodule BeaconAssistant.LLMClient do
   defp complete_openai(prompt, http_client, opts) do
     endpoint = Keyword.get(opts, :endpoint, openai_endpoint())
     model = Keyword.get(opts, :model, openai_model())
+    fallback_model = Keyword.get(opts, :fallback_model, openai_fallback_model())
     api_key = Keyword.get(opts, :api_key, openai_api_key())
     timeout_ms = Keyword.get(opts, :timeout_ms, llm_timeout_ms())
 
@@ -40,17 +41,99 @@ defmodule BeaconAssistant.LLMClient do
         {:error, :missing_model}
 
       true ->
-        request_opts = [
-          headers: [{"authorization", "Bearer #{api_key}"}],
-          json: %{model: model, input: prompt},
-          receive_timeout: timeout_ms
-        ]
+        case request_openai_completion(
+               http_client,
+               endpoint,
+               prompt,
+               api_key,
+               model,
+               timeout_ms,
+               :primary
+             ) do
+          {:error, reason} = error ->
+            if model_unavailable_error?(reason) and not blank?(fallback_model) do
+              Logger.warning(
+                "llm_client.complete primary_model_unavailable model=#{model} fallback_model=#{fallback_model}"
+              )
 
+              request_openai_completion(
+                http_client,
+                endpoint,
+                prompt,
+                api_key,
+                fallback_model,
+                timeout_ms,
+                :fallback
+              )
+            else
+              if model_unavailable_error?(reason) do
+                Logger.warning(
+                  "llm_client.complete primary_model_unavailable_without_fallback model=#{model}"
+                )
+              end
+
+              error
+            end
+
+          result ->
+            result
+        end
+    end
+  end
+
+  defp request_openai_completion(
+         http_client,
+         endpoint,
+         prompt,
+         api_key,
+         model,
+         timeout_ms,
+         attempt
+       ) do
+    request_opts = [
+      headers: [{"authorization", "Bearer #{api_key}"}],
+      json: %{model: model, input: prompt},
+      receive_timeout: timeout_ms
+    ]
+
+    Logger.info(
+      "llm_client.complete request provider=openai attempt=#{attempt} endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
+    )
+
+    case http_client.(endpoint, request_opts) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         Logger.info(
-          "llm_client.complete request provider=openai endpoint=#{endpoint} model=#{model} prompt_bytes=#{byte_size(prompt)} timeout_ms=#{timeout_ms}"
+          "llm_client.complete response provider=openai attempt=#{attempt} status=#{status}"
         )
 
-        request_completion(http_client, endpoint, request_opts, &parse_openai_success_body/1)
+        parse_openai_success_body(body)
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        reason = openai_http_error_reason(status, body)
+
+        Logger.error(
+          "llm_client.complete http_error provider=openai attempt=#{attempt} status=#{status}"
+        )
+
+        {:error, reason}
+
+      {:error, %Req.TransportError{reason: reason}} ->
+        Logger.error(
+          "llm_client.complete transport_error provider=openai attempt=#{attempt} reason=#{inspect(reason)}"
+        )
+
+        {:error, {:transport_error, reason}}
+
+      {:error, reason} ->
+        Logger.error(
+          "llm_client.complete client_error provider=openai attempt=#{attempt} reason=#{inspect(reason)}"
+        )
+
+        {:error, reason}
+
+      _other ->
+        Logger.error("llm_client.complete unexpected_response provider=openai attempt=#{attempt}")
+        {:error, :unexpected_response}
     end
   end
 
@@ -166,6 +249,34 @@ defmodule BeaconAssistant.LLMClient do
   defp openai_model do
     System.get_env("LLM_MODEL") || llm_config(:model)
   end
+
+  defp openai_fallback_model do
+    System.get_env("LLM_FALLBACK_MODEL") || llm_config(:fallback_model)
+  end
+
+  defp openai_http_error_reason(status, body) do
+    if openai_model_unavailable?(status, body) do
+      {:model_unavailable, status}
+    else
+      {:http_error, status}
+    end
+  end
+
+  defp openai_model_unavailable?(404, _body), do: true
+
+  defp openai_model_unavailable?(_status, body) do
+    body
+    |> inspect()
+    |> String.downcase()
+    |> then(fn body_text ->
+      String.contains?(body_text, "model_not_found") or
+        String.contains?(body_text, "model_not_available") or
+        String.contains?(body_text, "model unavailable")
+    end)
+  end
+
+  defp model_unavailable_error?({:model_unavailable, _status}), do: true
+  defp model_unavailable_error?(_reason), do: false
 
   defp ollama_endpoint do
     generate_url =

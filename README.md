@@ -107,6 +107,7 @@ Required web service variables:
 - `LLM_PROVIDER=openai`.
 - `LLM_API_KEY` with the OpenAI API key.
 - `LLM_MODEL` with the OpenAI model name.
+- `LLM_FALLBACK_MODEL` with a stable OpenAI fallback model name.
 - `LLM_TIMEOUT_MS=15000`.
 - `KNOWLEDGE_BASE_DIR=/app/knowledge-base`.
 
@@ -127,6 +128,7 @@ LLM provider behavior:
 - Missing `LLM_PROVIDER`, or any value other than `openai`, uses Ollama.
 - `LLM_PROVIDER=openai` calls the OpenAI Responses API.
 - OpenAI requires both `LLM_API_KEY` and `LLM_MODEL`.
+- `LLM_FALLBACK_MODEL` is optional and is used for OpenAI only when the primary model is unavailable.
 - Ollama can be customized with `OLLAMA_BASE_URL`, `OLLAMA_GENERATE_URL`, `OLLAMA_MODEL`, and `OLLAMA_TIMEOUT_MS`.
 
 Required for production:
@@ -137,6 +139,7 @@ Required for production:
 - `LLM_PROVIDER=openai`
 - `LLM_API_KEY`
 - `LLM_MODEL`
+- `LLM_FALLBACK_MODEL`
 - `LLM_TIMEOUT_MS`
 - `KNOWLEDGE_BASE_DIR`
 
@@ -154,4 +157,5 @@ Markdown help-center files belong in `priv/knowledge_base/` for local source run
 
 - **Local & Production LLMs**: We used a local model via Ollama for zero-cost local testing and development. In production, we use an API key for a cloud model (GPT-5 Nano) which offers an excellent cost-to-performance ratio. This choice was dictated by the need to balance costs and the required performance.
 - **Dynamic Configuration**: The choice of the LLM provider and model is completely dynamic and controlled via environment variables. This ensures that if we ever want to switch models or providers in the future, we only need to update the configuration without modifying the code.
+- **LLM Model Fallback**: We added an OpenAI fallback model configured with `LLM_FALLBACK_MODEL` to avoid possible availability errors when the primary model configured through `LLM_MODEL` is temporarily unavailable.
 - **Hosting**: We chose Railway as our hosting provider because it allows us to deploy the application and integrate a PostgreSQL database with just a few clicks.

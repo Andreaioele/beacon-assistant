@@ -24,6 +24,7 @@ config :beacon_assistant, :llm,
   provider: System.get_env("LLM_PROVIDER", "ollama"),
   api_key: System.get_env("LLM_API_KEY"),
   model: System.get_env("LLM_MODEL"),
+  fallback_model: System.get_env("LLM_FALLBACK_MODEL"),
   timeout_ms: String.to_integer(System.get_env("LLM_TIMEOUT_MS", "15000"))
 
 config :beacon_assistant, BeaconAssistantWeb.Endpoint,
