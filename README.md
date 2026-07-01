@@ -131,7 +131,7 @@ LLM_API_KEY=<openai-api-key>
 LLM_MODEL=<primary-openai-model>
 LLM_FALLBACK_MODEL=<fallback-openai-model>
 OPENAI_RESPONSES_URL=https://api.openai.com/v1/responses
-LLM_TIMEOUT_MS=15000
+LLM_TIMEOUT_MS=60000
 ```
 
 Railway provides `PORT` and `RAILWAY_PUBLIC_DOMAIN`. `config/runtime.exs` uses `PHX_HOST`, then `RAILWAY_PUBLIC_DOMAIN`, then `example.com` as a fallback.
@@ -171,6 +171,12 @@ The main flow is:
 9. When generation finishes, the chatbot validates the final JSON response and filters the sources declared by the model against the documents that were actually loaded.
 10. `BeaconAssistant.Conversations` stores the final question, answer, sources, status, provider, model, and metrics.
 11. LiveView replaces the temporary assistant bubble with the persisted final exchange and shows sources.
+
+### Chat Session Cookie
+
+The app uses the Phoenix session to keep the browser attached to the same anonymous chat history. `BeaconAssistantWeb.Plugs.EnsureChatSession` stores a `chat_session_id` in the signed session cookie named `_beacon_assistant_key`; LiveView then uses that id to reload previous exchanges and persist new ones in `chat_sessions` and `chat_exchanges`.
+
+To start a completely new chat session in the same browser, remove the `_beacon_assistant_key` cookie for the app domain and reload `/`. Clearing only the visible messages is not enough: as long as the cookie remains, the app will keep reusing the same stored chat session.
 
 ### Streaming Responses
 
