@@ -27,6 +27,17 @@ import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const Hooks = {
+  ChatAutoScroll: {
+    mounted() {
+      this.scrollToBottom()
+    },
+    updated() {
+      this.scrollToBottom()
+    },
+    scrollToBottom() {
+      this.el.scrollTop = this.el.scrollHeight
+    },
+  },
   NetworkStatus: {
     mounted() {
       this.handleStatusChange = () => {

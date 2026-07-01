@@ -96,6 +96,46 @@ defmodule BeaconAssistant.ChatbotTest do
     assert exchange.sources == []
   end
 
+  test "streams only visible answer deltas while preserving final source validation" do
+    build_context = fn -> {:ok, %{context: @context, sources: @sources}} end
+    parent = self()
+
+    stream = fn _prompt, opts ->
+      opts[:on_delta].(~s({"answer":"Ground))
+      opts[:on_delta].("ed answer")
+      opts[:on_delta].(~s(","sources":["03-billing-and-refunds.md","unknown.md"]}))
+
+      {:ok,
+       %{
+         answer:
+           Jason.encode!(%{
+             answer: "Grounded answer",
+             sources: ["03-billing-and-refunds.md", "unknown.md"]
+           }),
+         provider: "ollama",
+         model_name: "qwen3:14b"
+       }}
+    end
+
+    assert {:ok, exchange} =
+             Chatbot.ask_stream("how billing works",
+               build_context: build_context,
+               stream: stream,
+               on_delta: fn delta -> send(parent, {:delta, delta}) end
+             )
+
+    assert exchange.status == :completed
+    assert exchange.answer == "Grounded answer"
+    assert exchange.sources == ["03-billing-and-refunds.md"]
+    assert_received {:delta, "Ground"}
+    assert_received {:delta, "ed answer"}
+    refute_received {:delta, _delta}
+  end
+
+  test "ask_stream rejects empty questions" do
+    assert {:error, :empty_question} = Chatbot.ask_stream("   ")
+  end
+
   test "returns knowledge base fallback when no markdown context exists" do
     build_context = fn -> {:error, :no_knowledge_base_documents} end
 
