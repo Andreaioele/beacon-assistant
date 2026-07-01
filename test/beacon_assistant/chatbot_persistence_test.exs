@@ -82,7 +82,7 @@ defmodule BeaconAssistant.ChatbotPersistenceTest do
              )
 
     assert exchange.status == "failed"
-    assert exchange.answer == Chatbot.fallback_message(:llm)
+    assert exchange.answer == Chatbot.fallback_message(:model_timeout)
     assert exchange.error_reason == ":timeout"
     assert exchange.model_name == "gpt-test"
     assert exchange.response_time_ms == 15

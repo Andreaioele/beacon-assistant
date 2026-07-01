@@ -26,10 +26,62 @@ import {hooks as colocatedHooks} from "phoenix-colocated/beacon_assistant"
 import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+const Hooks = {
+  NetworkStatus: {
+    mounted() {
+      this.handleStatusChange = () => {
+        const online = window.navigator.onLine
+        this.applyClientNetworkState(online)
+        this.pushEvent("network_status_changed", {online})
+      }
+
+      window.addEventListener("online", this.handleStatusChange)
+      window.addEventListener("offline", this.handleStatusChange)
+      this.handleStatusChange()
+    },
+    destroyed() {
+      window.removeEventListener("online", this.handleStatusChange)
+      window.removeEventListener("offline", this.handleStatusChange)
+    },
+    applyClientNetworkState(online) {
+      this.el.querySelectorAll("input, button").forEach(element => {
+        if (!online) {
+          element.dataset.networkDisabled = element.disabled ? "true" : "false"
+          element.disabled = true
+        } else if (element.dataset.networkDisabled === "false") {
+          element.disabled = false
+          delete element.dataset.networkDisabled
+        }
+      })
+
+      const existingMessage = this.el.querySelector("[data-client-offline-message]")
+
+      if (online) {
+        if (existingMessage) existingMessage.remove()
+        return
+      }
+
+      if (existingMessage) return
+
+      const message = document.createElement("p")
+      message.dataset.clientOfflineMessage = "true"
+      message.className = "mt-4 rounded-md bg-error/10 p-3 text-sm text-error"
+      message.textContent = "You appear to be offline. Connect to the internet before sending a request."
+
+      const form = this.el.querySelector("form")
+      if (form) {
+        form.insertAdjacentElement("beforebegin", message)
+      } else {
+        this.el.appendChild(message)
+      }
+    },
+  },
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
 })
 
 // Show progress bar on live navigation and form submits
@@ -80,4 +132,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

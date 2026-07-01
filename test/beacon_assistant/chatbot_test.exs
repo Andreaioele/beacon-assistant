@@ -105,7 +105,7 @@ defmodule BeaconAssistant.ChatbotTest do
     assert exchange.sources == []
   end
 
-  test "returns LLM fallback when Ollama fails" do
+  test "returns timeout fallback when model times out" do
     build_context = fn -> {:ok, %{context: @context, sources: ["source.md"]}} end
     complete = fn _prompt -> {:error, :timeout} end
 
@@ -113,7 +113,45 @@ defmodule BeaconAssistant.ChatbotTest do
              Chatbot.ask("how billing works", build_context: build_context, complete: complete)
 
     assert exchange.status == :failed
-    assert exchange.answer == Chatbot.fallback_message(:llm)
+    assert exchange.answer == Chatbot.fallback_message(:model_timeout)
+    assert exchange.error_category == :model_timeout
+    assert exchange.sources == []
+  end
+
+  test "returns critical fallback when LLM returns a critical error" do
+    build_context = fn -> {:ok, %{context: @context, sources: ["source.md"]}} end
+    complete = fn _prompt -> {:error, :critical} end
+
+    assert {:ok, exchange} =
+             Chatbot.ask("how billing works", build_context: build_context, complete: complete)
+
+    assert exchange.status == :failed
+    assert exchange.answer == Chatbot.fallback_message(:critical)
+    assert exchange.error_category == :critical
+    assert exchange.sources == []
+  end
+
+  test "returns critical fallback when knowledge base raises" do
+    build_context = fn -> raise RuntimeError, "disk unavailable" end
+
+    assert {:ok, exchange} = Chatbot.ask("how billing works", build_context: build_context)
+
+    assert exchange.status == :failed
+    assert exchange.answer == Chatbot.fallback_message(:critical)
+    assert exchange.error_category == :critical
+    assert exchange.sources == []
+  end
+
+  test "returns critical fallback when LLM raises" do
+    build_context = fn -> {:ok, %{context: @context, sources: ["source.md"]}} end
+    complete = fn _prompt -> raise RuntimeError, "provider crashed" end
+
+    assert {:ok, exchange} =
+             Chatbot.ask("how billing works", build_context: build_context, complete: complete)
+
+    assert exchange.status == :failed
+    assert exchange.answer == Chatbot.fallback_message(:critical)
+    assert exchange.error_category == :critical
     assert exchange.sources == []
   end
 

@@ -172,6 +172,17 @@ The main flow is:
 
 `GET /health` is outside the browser pipeline. It returns `200 OK` without touching the database, session, knowledge base, or LLM, so Railway can use it as a lightweight liveness check.
 
+## Error Handling
+
+The chat flow handles expected and unexpected failures without crashing the LiveView process.
+
+- Browser offline: the client checks `navigator.onLine` and sends network status updates to LiveView. When the browser is offline, the form is disabled and the app shows: `You appear to be offline. Connect to the internet before sending a request.` No chatbot or LLM request is started while the client is offline.
+- Model timeout: LLM timeout reasons are normalized as `:model_timeout`. The failed exchange is shown with: `The model is taking too long to respond. Please try again.`
+- Knowledge base unavailable or empty: the chatbot does not call the LLM and returns the knowledge-base fallback answer.
+- Critical errors: malformed provider responses, provider HTTP errors, missing provider configuration, unexpected module exceptions, and persistence failures are caught and normalized. The user sees: `Something went wrong. Please try again later.`
+
+Technical error reasons are logged and stored on failed exchanges when available. The UI never exposes provider response bodies, stack traces, request payloads, API keys, or raw runtime errors.
+
 ## Technical And Architectural Decisions
 
 - Phoenix LiveView avoids a separate SPA and keeps UI, session handling, and persistence in a single Elixir runtime.
@@ -180,6 +191,7 @@ The main flow is:
 - The prompt is grounded: the model must answer only from the provided context and return JSON with `answer` and `sources`.
 - Ollama is the local default to reduce cost and avoid API key dependency during development.
 - OpenAI is opt-in for production or cloud testing, configured only through environment variables.
+- Error handling is split by responsibility: browser connectivity is detected in the client before a request is sent, while server-side provider, knowledge-base, parsing, and persistence failures are normalized inside the application layer before they reach LiveView.
 - The Docker release runs migrations at runtime, not during image build, to avoid tying images to a specific database state.
 - Production HTTP binds to IPv4 `0.0.0.0`, which is required to publish the port correctly both in local Docker and on Railway.
 
