@@ -15,6 +15,8 @@ defmodule BeaconAssistantWeb.ChatLive do
         chat_session_id: chat_session_id,
         exchanges: exchanges,
         loading: false,
+        active_stream_ref: nil,
+        active_task_ref: nil,
         error: nil,
         client_online: true,
         form: to_form(%{"question" => ""}, as: :chat)
@@ -38,12 +40,7 @@ defmodule BeaconAssistantWeb.ChatLive do
         {:noreply, socket}
 
       true ->
-        socket =
-          socket
-          |> assign(loading: true, error: nil)
-          |> ask_and_assign(question)
-
-        {:noreply, socket}
+        {:noreply, start_streaming_answer(socket, question)}
     end
   end
 
@@ -56,6 +53,70 @@ defmodule BeaconAssistantWeb.ChatLive do
   def handle_event("network_status_changed", %{online: online}, socket)
       when is_boolean(online) do
     handle_network_status_changed(online, socket)
+  end
+
+  @impl true
+  def handle_info({:chat_stream_delta, stream_ref, delta}, socket) do
+    if socket.assigns.active_stream_ref == stream_ref do
+      {:noreply, update(socket, :exchanges, &append_pending_answer_delta(&1, stream_ref, delta))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:chat_stream_done, stream_ref, exchange}, socket) do
+    if socket.assigns.active_stream_ref == stream_ref do
+      socket =
+        socket
+        |> assign(loading: false, active_stream_ref: nil, active_task_ref: nil)
+        |> update(:exchanges, &replace_pending_exchange(&1, stream_ref, exchange))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:chat_stream_failed, stream_ref, exchange}, socket) do
+    if socket.assigns.active_stream_ref == stream_ref do
+      socket =
+        socket
+        |> assign(loading: false, active_stream_ref: nil, active_task_ref: nil)
+        |> update(:exchanges, &replace_pending_exchange(&1, stream_ref, exchange))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({task_ref, _result}, socket) do
+    if task_ref == socket.assigns.active_task_ref do
+      Process.demonitor(task_ref, [:flush])
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:DOWN, task_ref, :process, _pid, reason}, socket) do
+    if task_ref == socket.assigns.active_task_ref do
+      Logger.error("chat_live stream task stopped reason=#{inspect(reason)}")
+
+      exchange =
+        failed_pending_exchange(
+          socket.assigns.active_stream_ref,
+          pending_question(socket.assigns.exchanges, socket.assigns.active_stream_ref)
+        )
+
+      socket =
+        socket
+        |> assign(loading: false, active_stream_ref: nil, active_task_ref: nil)
+        |> update(:exchanges, &replace_pending_exchange(&1, exchange.id, exchange))
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
   end
 
   defp handle_network_status_changed(online, socket) do
@@ -89,6 +150,7 @@ defmodule BeaconAssistantWeb.ChatLive do
 
       <section
         id="chat-log"
+        phx-hook="ChatAutoScroll"
         class="mt-8 flex min-h-96 flex-1 flex-col gap-4 rounded-lg border border-base-300 bg-base-100 p-4"
       >
         <p :if={@exchanges == []} class="py-16 text-center text-sm text-base-content/60">
@@ -105,8 +167,19 @@ defmodule BeaconAssistantWeb.ChatLive do
             <p class="text-xs font-semibold uppercase tracking-wide text-base-content/55">
               Assistant
             </p>
-            <p class="mt-1 whitespace-pre-wrap text-sm leading-6">{exchange.answer}</p>
-            <p :if={exchange.sources != []} class="mt-3 text-xs text-base-content/55">
+            <p class="mt-1 whitespace-pre-wrap text-sm leading-6">
+              <span :if={exchange_answer(exchange) != ""}>{exchange_answer(exchange)}</span>
+              <span
+                :if={pending_exchange?(exchange) && exchange_answer(exchange) == ""}
+                class="text-base-content/55"
+              >
+                Generating...
+              </span>
+            </p>
+            <p
+              :if={!pending_exchange?(exchange) && exchange.sources != []}
+              class="mt-3 text-xs text-base-content/55"
+            >
               Sources used: {Enum.join(exchange.sources, ", ")}
             </p>
           </div>
@@ -134,18 +207,42 @@ defmodule BeaconAssistantWeb.ChatLive do
     """
   end
 
-  defp ask_and_assign(socket, question) do
+  defp start_streaming_answer(socket, question) do
+    parent = self()
+    stream_ref = make_ref()
+    Conversations.get_or_create_session(socket.assigns.chat_session_id)
+
+    task =
+      Task.Supervisor.async_nolink(BeaconAssistant.ChatTaskSupervisor, fn ->
+        ask_and_notify(parent, stream_ref, question, socket.assigns.chat_session_id)
+      end)
+
+    socket
+    |> assign(
+      loading: true,
+      active_stream_ref: stream_ref,
+      active_task_ref: task.ref,
+      error: nil,
+      form: to_form(%{"question" => ""}, as: :chat)
+    )
+    |> update(:exchanges, &(&1 ++ [pending_exchange(stream_ref, question)]))
+  end
+
+  defp ask_and_notify(parent, stream_ref, question, chat_session_id) do
     result =
       try do
-        Chatbot.ask(question, chat_session_id: socket.assigns.chat_session_id)
+        Chatbot.ask_stream(question,
+          chat_session_id: chat_session_id,
+          on_delta: fn delta -> send(parent, {:chat_stream_delta, stream_ref, delta}) end
+        )
       rescue
         exception ->
-          Logger.error("chat_live.ask_and_assign raised error=#{Exception.message(exception)}")
+          Logger.error("chat_live.ask_stream raised error=#{Exception.message(exception)}")
           {:error, :critical}
       catch
         kind, reason ->
           Logger.error(
-            "chat_live.ask_and_assign threw kind=#{inspect(kind)} reason=#{inspect(reason)}"
+            "chat_live.ask_stream threw kind=#{inspect(kind)} reason=#{inspect(reason)}"
           )
 
           {:error, :critical}
@@ -153,19 +250,74 @@ defmodule BeaconAssistantWeb.ChatLive do
 
     case result do
       {:ok, exchange} ->
-        assign(socket,
-          exchanges: socket.assigns.exchanges ++ [exchange],
-          loading: false,
-          form: to_form(%{"question" => ""}, as: :chat)
+        message =
+          if exchange_status(exchange) == "failed" do
+            :chat_stream_failed
+          else
+            :chat_stream_done
+          end
+
+        send(parent, {message, stream_ref, exchange})
+
+      {:error, _reason} ->
+        send(
+          parent,
+          {:chat_stream_failed, stream_ref, failed_pending_exchange(stream_ref, question)}
         )
-
-      {:error, :empty_question} ->
-        assign(socket, loading: false, error: "Enter a question before sending.")
-
-      {:error, :critical} ->
-        assign(socket, loading: false, error: ErrorHandling.critical_message())
     end
+
+    :ok
   end
+
+  defp pending_exchange(stream_ref, question) do
+    %{
+      id: stream_ref,
+      question: question,
+      answer: "",
+      status: "streaming",
+      sources: [],
+      pending?: true
+    }
+  end
+
+  defp failed_pending_exchange(stream_ref, question) do
+    %{
+      id: stream_ref,
+      question: question,
+      answer: ErrorHandling.critical_message(),
+      status: "failed",
+      sources: [],
+      pending?: false
+    }
+  end
+
+  defp append_pending_answer_delta(exchanges, stream_ref, delta) do
+    Enum.map(exchanges, fn
+      %{id: ^stream_ref, pending?: true} = exchange ->
+        %{exchange | answer: exchange.answer <> delta}
+
+      exchange ->
+        exchange
+    end)
+  end
+
+  defp replace_pending_exchange(exchanges, stream_ref, exchange) do
+    Enum.map(exchanges, fn
+      %{id: ^stream_ref, pending?: true} -> exchange
+      current_exchange -> current_exchange
+    end)
+  end
+
+  defp pending_question(exchanges, stream_ref) do
+    Enum.find_value(exchanges, "", fn
+      %{id: ^stream_ref, question: question} -> question
+      _exchange -> nil
+    end)
+  end
+
+  defp pending_exchange?(exchange), do: Map.get(exchange, :pending?, false)
+  defp exchange_answer(exchange), do: Map.get(exchange, :answer) || ""
+  defp exchange_status(exchange), do: exchange |> Map.get(:status) |> to_string()
 
   defp chat_session_id(session) do
     Map.get(session, "chat_session_id") || Map.get(session, :chat_session_id) ||

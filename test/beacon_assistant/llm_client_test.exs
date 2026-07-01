@@ -470,6 +470,144 @@ defmodule BeaconAssistant.LLMClientTest do
     assert is_integer(metadata.response_time_ms)
   end
 
+  test "streams Ollama chunks and returns metadata" do
+    parent = self()
+
+    http_client = fn url, opts ->
+      send(parent, {:request, url, opts})
+
+      stream_chunk(opts, %{
+        "response" => ~s({"answer":"Hel),
+        "done" => false
+      })
+
+      stream_chunk(opts, %{
+        "response" => ~s(lo","sources":[]}),
+        "done" => true,
+        "prompt_eval_count" => 3,
+        "eval_count" => 4
+      })
+
+      {:ok, %Req.Response{status: 200, body: nil}}
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.stream_with_metadata("prompt",
+               http_client: http_client,
+               provider: "ollama",
+               endpoint: @ollama_endpoint,
+               model: "qwen3:14b",
+               timeout_ms: 12_345,
+               on_delta: fn delta -> send(parent, {:delta, delta}) end
+             )
+
+    assert_received {:request, @ollama_endpoint, opts}
+    assert opts[:json].model == "qwen3:14b"
+    assert opts[:json].stream == true
+    assert opts[:json].prompt == "prompt"
+    assert_received {:delta, ~s({"answer":"Hel)}
+    assert_received {:delta, ~s(lo","sources":[]})}
+    assert metadata.answer == ~s({"answer":"Hello","sources":[]})
+    assert metadata.provider == "ollama"
+    assert metadata.input_tokens == 3
+    assert metadata.output_tokens == 4
+    assert metadata.total_tokens == 7
+  end
+
+  test "streams OpenAI SSE output text deltas and completion metadata" do
+    parent = self()
+
+    http_client = fn url, opts ->
+      send(parent, {:request, url, opts})
+
+      stream_sse(opts, %{
+        "type" => "response.output_text.delta",
+        "delta" => ~s({"answer":"Hel)
+      })
+
+      stream_sse(opts, %{
+        "type" => "response.output_text.delta",
+        "delta" => ~s(lo","sources":[]})
+      })
+
+      stream_sse(opts, %{
+        "type" => "response.completed",
+        "response" => %{
+          "id" => "resp_123",
+          "usage" => %{"input_tokens" => 8, "output_tokens" => 5, "total_tokens" => 13}
+        }
+      })
+
+      {:ok, %Req.Response{status: 200, body: nil}}
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.stream_with_metadata("prompt",
+               http_client: http_client,
+               provider: "openai",
+               endpoint: @openai_endpoint,
+               api_key: "test-key",
+               model: "gpt-test",
+               timeout_ms: 12_345,
+               on_delta: fn delta -> send(parent, {:delta, delta}) end
+             )
+
+    assert_received {:request, @openai_endpoint, opts}
+    assert opts[:headers] == [{"authorization", "Bearer test-key"}]
+    assert opts[:json] == %{model: "gpt-test", input: "prompt", stream: true}
+    assert_received {:delta, ~s({"answer":"Hel)}
+    assert_received {:delta, ~s(lo","sources":[]})}
+    assert metadata.answer == ~s({"answer":"Hello","sources":[]})
+    assert metadata.provider == "openai"
+    assert metadata.model_name == "gpt-test"
+    assert metadata.provider_request_id == "resp_123"
+    assert metadata.total_tokens == 13
+  end
+
+  test "streaming OpenAI retries with fallback model when primary model is unavailable" do
+    parent = self()
+
+    http_client = fn _url, opts ->
+      send(parent, {:model, opts[:json].model})
+
+      case opts[:json].model do
+        "primary-test" ->
+          {:ok, %Req.Response{status: 404, body: %{"error" => %{"code" => "model_not_found"}}}}
+
+        "fallback-test" ->
+          stream_sse(opts, %{
+            "type" => "response.output_text.delta",
+            "delta" => ~s({"answer":"Fallback","sources":[]})
+          })
+
+          stream_sse(opts, %{
+            "type" => "response.completed",
+            "response" => %{"id" => "resp_fallback"}
+          })
+
+          {:ok, %Req.Response{status: 200, body: nil}}
+      end
+    end
+
+    assert {:ok, metadata} =
+             LLMClient.stream_with_metadata("prompt",
+               http_client: http_client,
+               provider: "openai",
+               endpoint: @openai_endpoint,
+               api_key: "test-key",
+               model: "primary-test",
+               fallback_model: "fallback-test",
+               timeout_ms: 12_345
+             )
+
+    assert_received {:model, "primary-test"}
+    assert_received {:model, "fallback-test"}
+    assert metadata.answer == ~s({"answer":"Fallback","sources":[]})
+    assert metadata.model_name == "fallback-test"
+    assert metadata.fallback_used == true
+    assert metadata.provider_request_id == "resp_fallback"
+  end
+
   test "handles malformed and empty OpenAI responses" do
     malformed = fn _url, _opts ->
       {:ok, %Req.Response{status: 200, body: %{"id" => "resp_123"}}}
@@ -555,5 +693,13 @@ defmodule BeaconAssistant.LLMClientTest do
 
     assert_received {:model, "primary-test"}
     refute_received {:model, "fallback-test"}
+  end
+
+  defp stream_chunk(opts, body) do
+    opts[:into].({:data, Jason.encode!(body) <> "\n"}, {%{}, %Req.Response{}})
+  end
+
+  defp stream_sse(opts, body) do
+    opts[:into].({:data, "data: " <> Jason.encode!(body) <> "\n\n"}, {%{}, %Req.Response{}})
   end
 end

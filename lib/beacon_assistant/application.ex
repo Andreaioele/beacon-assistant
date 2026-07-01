@@ -12,6 +12,7 @@ defmodule BeaconAssistant.Application do
       BeaconAssistant.Repo,
       {DNSCluster, query: Application.get_env(:beacon_assistant, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: BeaconAssistant.PubSub},
+      {Task.Supervisor, name: BeaconAssistant.ChatTaskSupervisor},
       # Start a worker by calling: BeaconAssistant.Worker.start_link(arg)
       # {BeaconAssistant.Worker, arg},
       # Start to serve requests, typically the last entry

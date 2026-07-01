@@ -164,11 +164,19 @@ The main flow is:
 2. `BeaconAssistantWeb.Plugs.EnsureChatSession` ensures the HTTP session has an anonymous `chat_session_id`.
 3. `BeaconAssistantWeb.ChatLive` loads previous exchanges for that session.
 4. The user sends a question.
-5. `BeaconAssistant.Chatbot.ask/2` normalizes the question, builds the context from the knowledge base, prepares the grounded prompt, and calls `BeaconAssistant.LLMClient`.
-6. The LLM client calls Ollama or OpenAI based on configuration.
-7. The chatbot validates the JSON response and filters the sources declared by the model against the documents that were actually loaded.
-8. `BeaconAssistant.Conversations` stores the question, answer, sources, status, provider, model, and metrics.
-9. LiveView appends the exchange to the UI.
+5. `BeaconAssistantWeb.ChatLive` immediately appends the user's question and an empty assistant bubble.
+6. A supervised task calls `BeaconAssistant.Chatbot.ask_stream/2`, which normalizes the question, builds the context from the knowledge base, prepares the grounded prompt, and calls `BeaconAssistant.LLMClient`.
+7. The LLM client streams chunks from Ollama or OpenAI based on configuration.
+8. The chatbot extracts only the JSON `answer` text while chunks arrive and sends visible answer deltas back to LiveView.
+9. When generation finishes, the chatbot validates the final JSON response and filters the sources declared by the model against the documents that were actually loaded.
+10. `BeaconAssistant.Conversations` stores the final question, answer, sources, status, provider, model, and metrics.
+11. LiveView replaces the temporary assistant bubble with the persisted final exchange and shows sources.
+
+### Streaming Responses
+
+Chat responses are streamed through the existing LiveView connection. The UI shows the user message and an assistant `Generating...` placeholder immediately, then updates the assistant text as provider chunks arrive. The model still returns the same internal JSON shape, `{"answer":"...","sources":["filename.md"]}`, but the UI streams only the decoded `answer` field so users never see raw JSON. Sources are hidden during generation and shown only after the final response is parsed and validated.
+
+The synchronous `Chatbot.ask/2` and `LLMClient.complete_with_metadata/2` paths remain available for compatibility and tests. The interactive chat uses `Chatbot.ask_stream/2` and `LLMClient.stream_with_metadata/2`.
 
 `GET /health` is outside the browser pipeline. It returns `200 OK` without touching the database, session, knowledge base, or LLM, so Railway can use it as a lightweight liveness check.
 
@@ -189,6 +197,7 @@ Technical error reasons are logged and stored on failed exchanges when available
 - PostgreSQL stores conversations and metrics so provider errors, answers, and token/cost behavior are debuggable.
 - The knowledge base stays in Markdown files so updates are simple and reviewable.
 - The prompt is grounded: the model must answer only from the provided context and return JSON with `answer` and `sources`.
+- Chat generation is streamed to the browser over LiveView, while only completed or failed final exchanges are persisted.
 - Ollama is the local default to reduce cost and avoid API key dependency during development.
 - OpenAI is opt-in for production or cloud testing, configured only through environment variables.
 - Error handling is split by responsibility: browser connectivity is detected in the client before a request is sent, while server-side provider, knowledge-base, parsing, and persistence failures are normalized inside the application layer before they reach LiveView.
@@ -249,21 +258,21 @@ Indexes:
 
 ### Core Application
 
-- `BeaconAssistant.Application`: starts the supervision tree, repo, endpoint, telemetry, and DNS cluster.
+- `BeaconAssistant.Application`: starts the supervision tree, repo, endpoint, telemetry, DNS cluster, and chat task supervisor.
 - `BeaconAssistant.Repo`: Ecto boundary for PostgreSQL.
 - `BeaconAssistant.Conversations`: persistence API for sessions and exchanges.
 - `BeaconAssistant.Conversations.ChatSession`: Ecto schema for anonymous sessions.
 - `BeaconAssistant.Conversations.ChatExchange`: Ecto schema for question-answer exchanges and metrics.
 - `BeaconAssistant.KnowledgeBase`: Markdown document loader and context builder.
-- `BeaconAssistant.Chatbot`: orchestrates question handling, prompt generation, LLM calls, parsing, source validation, and persistence.
-- `BeaconAssistant.LLMClient`: HTTP boundary for Ollama/OpenAI, response parsing, metrics, and OpenAI fallback model handling.
+- `BeaconAssistant.Chatbot`: orchestrates question handling, prompt generation, streaming LLM calls, visible answer deltas, parsing, source validation, and persistence.
+- `BeaconAssistant.LLMClient`: HTTP boundary for Ollama/OpenAI, streaming and non-streaming response parsing, metrics, and OpenAI fallback model handling.
 - `BeaconAssistant.Release`: runtime task module for migrations in Docker/Railway releases.
 
 ### Web
 
 - `BeaconAssistantWeb.Router`: routing, browser pipeline, and `/health` endpoint.
 - `BeaconAssistantWeb.Plugs.EnsureChatSession`: creates an anonymous UUID in the session when missing.
-- `BeaconAssistantWeb.ChatLive`: chat UI, history loading, and question submission.
+- `BeaconAssistantWeb.ChatLive`: chat UI, history loading, streaming answer updates, and question submission.
 - `BeaconAssistantWeb.HealthController`: minimal liveness check.
 - `BeaconAssistantWeb.Endpoint`: Phoenix endpoint configuration, LiveView socket, and static assets.
 - `BeaconAssistantWeb.Telemetry`: standard Phoenix metrics.
@@ -318,11 +327,11 @@ Payload sent:
 {
   "model": "qwen3-coder:30b",
   "prompt": "...",
-  "stream": false
+  "stream": true
 }
 ```
 
-The expected response contains `response`. Token metrics are read from `prompt_eval_count` and `eval_count`, when present.
+Streaming responses arrive as newline-delimited JSON chunks. Each chunk can contain a `response` delta; the final `done=true` chunk can include token metrics such as `prompt_eval_count` and `eval_count`.
 
 ### OpenAI Responses API
 
@@ -331,11 +340,12 @@ Payload sent:
 ```json
 {
   "model": "<LLM_MODEL>",
-  "input": "..."
+  "input": "...",
+  "stream": true
 }
 ```
 
-Text is extracted from `output[].content[].text`. Token metrics are read from `usage.input_tokens`, `usage.output_tokens`, and `usage.total_tokens`.
+Streaming responses arrive as server-sent events. Text deltas are read from `response.output_text.delta`; completion metadata is read from `response.completed`, including `usage.input_tokens`, `usage.output_tokens`, and `usage.total_tokens` when available.
 
 If the primary model is unavailable and `LLM_FALLBACK_MODEL` is set, the client retries once with the fallback model and stores `fallback_used=true` in metadata.
 
