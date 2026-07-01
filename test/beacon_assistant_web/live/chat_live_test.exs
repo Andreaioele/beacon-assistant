@@ -3,13 +3,19 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
   import Phoenix.LiveViewTest
 
-  alias BeaconAssistant.Conversations
+  alias BeaconAssistant.{Conversations, ErrorHandling}
 
   setup do
     previous = Application.get_env(:beacon_assistant, :chatbot_complete)
 
-    Application.put_env(:beacon_assistant, :chatbot_complete, fn _prompt ->
-      {:ok, "Billing is handled from the knowledge base."}
+    Application.put_env(:beacon_assistant, :chatbot_complete, fn prompt ->
+      assert prompt =~ "Return a JSON object only"
+
+      {:ok,
+       Jason.encode!(%{
+         answer: "Billing is handled from the knowledge base.",
+         sources: ["03-billing-and-refunds.md"]
+       })}
     end)
 
     on_exit(fn ->
@@ -38,6 +44,9 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
     assert html =~ "how billing works"
     assert html =~ "Billing is handled from the knowledge base."
+    assert html =~ "Sources used:"
+    assert html =~ "03-billing-and-refunds.md"
+    refute html =~ "04-account-and-security.md"
   end
 
   test "submitting multiple questions in the same browser session persists exchanges", %{
@@ -99,5 +108,77 @@ defmodule BeaconAssistantWeb.ChatLiveTest do
 
     assert html =~ "Enter a question before sending."
     refute html =~ "Billing is handled from the knowledge base."
+  end
+
+  test "offline browser status shows warning", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    html = render_hook(view, "network_status_changed", %{online: false})
+
+    assert html =~ ErrorHandling.offline_message()
+  end
+
+  test "offline submit does not call chatbot", %{conn: conn} do
+    parent = self()
+
+    Application.put_env(:beacon_assistant, :chatbot_complete, fn _prompt ->
+      send(parent, :chatbot_called)
+      {:ok, "should not run"}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+    render_hook(view, "network_status_changed", %{online: false})
+
+    html = render_hook(view, "send", %{"chat" => %{"question" => "how billing works"}})
+
+    assert html =~ ErrorHandling.offline_message()
+    refute_received :chatbot_called
+  end
+
+  test "returning online clears offline warning and allows submit", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    assert render_hook(view, "network_status_changed", %{online: false}) =~
+             ErrorHandling.offline_message()
+
+    refute render_hook(view, "network_status_changed", %{online: true}) =~
+             ErrorHandling.offline_message()
+
+    html =
+      view
+      |> form("form", chat: %{question: "how billing works"})
+      |> render_submit()
+
+    assert html =~ "Billing is handled from the knowledge base."
+  end
+
+  test "renders timeout failure without crashing", %{conn: conn} do
+    Application.put_env(:beacon_assistant, :chatbot_complete, fn _prompt ->
+      {:error, :timeout}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    html =
+      view
+      |> form("form", chat: %{question: "how billing works"})
+      |> render_submit()
+
+    assert html =~ ErrorHandling.model_timeout_message()
+  end
+
+  test "renders critical failure without crashing", %{conn: conn} do
+    Application.put_env(:beacon_assistant, :chatbot_complete, fn _prompt ->
+      {:error, :critical}
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+
+    html =
+      view
+      |> form("form", chat: %{question: "how billing works"})
+      |> render_submit()
+
+    assert html =~ ErrorHandling.critical_message()
   end
 end

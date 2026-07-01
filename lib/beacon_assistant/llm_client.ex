@@ -4,6 +4,7 @@ defmodule BeaconAssistant.LLMClient do
   """
 
   require Logger
+  alias BeaconAssistant.ErrorHandling
 
   def complete(prompt, opts \\ []) when is_binary(prompt) do
     case complete_with_metadata(prompt, opts) do
@@ -16,15 +17,31 @@ defmodule BeaconAssistant.LLMClient do
     http_client = Keyword.get(opts, :http_client, &Req.post/2)
 
     case provider(opts) do
-      "" -> {:error, :missing_provider, %{prompt_bytes: byte_size(prompt)}}
-      "openai" -> complete_openai(prompt, http_client, opts)
-      "ollama" -> complete_ollama(prompt, http_client, opts)
-      provider -> {:error, {:unsupported_provider, provider}, %{prompt_bytes: byte_size(prompt)}}
+      "" ->
+        {:error, :critical, %{prompt_bytes: byte_size(prompt), error_reason: ":missing_provider"}}
+
+      "openai" ->
+        complete_openai(prompt, http_client, opts)
+
+      "ollama" ->
+        complete_ollama(prompt, http_client, opts)
+
+      provider ->
+        {:error, :critical,
+         %{
+           prompt_bytes: byte_size(prompt),
+           error_reason: inspect({:unsupported_provider, provider})
+         }}
     end
   rescue
     exception ->
       Logger.error("llm_client.complete raised error=#{Exception.message(exception)}")
-      {:error, :llm_request_failed, %{prompt_bytes: byte_size(prompt)}}
+
+      {:error, :critical,
+       %{
+         prompt_bytes: byte_size(prompt),
+         error_reason: inspect({:exception, exception.__struct__})
+       }}
   end
 
   defp complete_openai(prompt, http_client, opts) do
@@ -37,19 +54,19 @@ defmodule BeaconAssistant.LLMClient do
     cond do
       blank?(endpoint) ->
         Logger.error("llm_client.complete missing OpenAI endpoint")
-        {:error, :missing_endpoint, base_metadata(:openai, model, prompt, nil)}
+        {:error, :critical, error_metadata(:openai, model, prompt, nil, :missing_endpoint)}
 
       blank?(api_key) ->
         Logger.error("llm_client.complete missing OpenAI API key")
-        {:error, :missing_api_key, base_metadata(:openai, model, prompt, nil)}
+        {:error, :critical, error_metadata(:openai, model, prompt, nil, :missing_api_key)}
 
       blank?(model) ->
         Logger.error("llm_client.complete missing OpenAI model")
-        {:error, :missing_model, base_metadata(:openai, model, prompt, nil)}
+        {:error, :critical, error_metadata(:openai, model, prompt, nil, :missing_model)}
 
       invalid_timeout?(timeout_ms) ->
         Logger.error("llm_client.complete missing OpenAI timeout")
-        {:error, :missing_timeout, base_metadata(:openai, model, prompt, nil)}
+        {:error, :critical, error_metadata(:openai, model, prompt, nil, :missing_timeout)}
 
       true ->
         case request_openai_completion(
@@ -77,6 +94,7 @@ defmodule BeaconAssistant.LLMClient do
                 :fallback,
                 true
               )
+              |> ErrorHandling.normalize_llm_result()
             else
               if model_unavailable_error?(reason) do
                 Logger.warning(
@@ -84,11 +102,11 @@ defmodule BeaconAssistant.LLMClient do
                 )
               end
 
-              error
+              ErrorHandling.normalize_llm_result(error)
             end
 
           result ->
-            result
+            ErrorHandling.normalize_llm_result(result)
         end
     end
   end
@@ -176,15 +194,15 @@ defmodule BeaconAssistant.LLMClient do
     cond do
       blank?(endpoint) ->
         Logger.error("llm_client.complete missing Ollama endpoint")
-        {:error, :missing_endpoint, base_metadata(:ollama, model, prompt, nil)}
+        {:error, :critical, error_metadata(:ollama, model, prompt, nil, :missing_endpoint)}
 
       blank?(model) ->
         Logger.error("llm_client.complete missing Ollama model")
-        {:error, :missing_model, base_metadata(:ollama, model, prompt, nil)}
+        {:error, :critical, error_metadata(:ollama, model, prompt, nil, :missing_model)}
 
       invalid_timeout?(timeout_ms) ->
         Logger.error("llm_client.complete missing Ollama timeout")
-        {:error, :missing_timeout, base_metadata(:ollama, model, prompt, nil)}
+        {:error, :critical, error_metadata(:ollama, model, prompt, nil, :missing_timeout)}
 
       true ->
         request_opts = [
@@ -242,6 +260,7 @@ defmodule BeaconAssistant.LLMClient do
         {:error, :unexpected_response,
          base_metadata(:ollama, model, prompt, elapsed_ms(started_at))}
     end
+    |> ErrorHandling.normalize_llm_result()
   end
 
   defp parse_ollama_success_body(%{"response" => response}) when is_binary(response) do
@@ -299,6 +318,12 @@ defmodule BeaconAssistant.LLMClient do
       provider_request_id: nil,
       fallback_used: false
     }
+  end
+
+  defp error_metadata(provider, model, prompt, response_time_ms, reason) do
+    provider
+    |> base_metadata(model, prompt, response_time_ms)
+    |> Map.put(:error_reason, inspect(reason))
   end
 
   defp openai_usage_metadata(%{"usage" => usage}) when is_map(usage) do

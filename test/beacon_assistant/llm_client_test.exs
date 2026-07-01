@@ -32,10 +32,10 @@ defmodule BeaconAssistant.LLMClientTest do
   test "requires an explicit supported provider" do
     http_client = fn _url, _opts -> flunk("request should not be sent") end
 
-    assert {:error, :missing_provider} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt", http_client: http_client, provider: nil)
 
-    assert {:error, {:unsupported_provider, "anything-else"}} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt", http_client: http_client, provider: "anything-else")
   end
 
@@ -204,7 +204,7 @@ defmodule BeaconAssistant.LLMClientTest do
       {:ok, %Req.Response{status: 404, body: %{"error" => %{"code" => "model_not_found"}}}}
     end
 
-    assert {:error, {:model_unavailable, 404}} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -234,7 +234,7 @@ defmodule BeaconAssistant.LLMClientTest do
       end
     end
 
-    assert {:error, {:http_error, 500}} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -252,7 +252,7 @@ defmodule BeaconAssistant.LLMClientTest do
   test "requires OpenAI API key and model" do
     http_client = fn _url, _opts -> flunk("OpenAI request should not be sent") end
 
-    assert {:error, :missing_api_key} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -261,7 +261,7 @@ defmodule BeaconAssistant.LLMClientTest do
                model: "gpt-test"
              )
 
-    assert {:error, :missing_model} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -274,7 +274,7 @@ defmodule BeaconAssistant.LLMClientTest do
   test "requires OpenAI endpoint and timeout" do
     http_client = fn _url, _opts -> flunk("OpenAI request should not be sent") end
 
-    assert {:error, :missing_endpoint} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -283,7 +283,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, :missing_timeout} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -298,7 +298,7 @@ defmodule BeaconAssistant.LLMClientTest do
       {:ok, %Req.Response{status: 500, body: %{"error" => "down"}}}
     end
 
-    assert {:error, {:http_error, 500}} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "ollama",
@@ -307,7 +307,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, {:http_error, 500}} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -321,22 +321,22 @@ defmodule BeaconAssistant.LLMClientTest do
   test "does not retry OpenAI errors unrelated to model availability" do
     assert_openai_no_fallback(
       {:ok, %Req.Response{status: 401, body: %{"error" => "unauthorized"}}},
-      {:error, {:http_error, 401}}
+      {:error, :critical}
     )
 
     assert_openai_no_fallback(
       {:ok, %Req.Response{status: 429, body: %{"error" => "rate limited"}}},
-      {:error, {:http_error, 429}}
+      {:error, :critical}
     )
 
     assert_openai_no_fallback(
       {:ok, %Req.Response{status: 500, body: %{"error" => "down"}}},
-      {:error, {:http_error, 500}}
+      {:error, :critical}
     )
 
     assert_openai_no_fallback(
       {:ok, %Req.Response{status: 200, body: %{"id" => "resp_123"}}},
-      {:error, :malformed_response}
+      {:error, :critical}
     )
 
     assert_openai_no_fallback(
@@ -345,16 +345,16 @@ defmodule BeaconAssistant.LLMClientTest do
          status: 200,
          body: %{"output" => [%{"content" => [%{"type" => "output_text", "text" => " "}]}]}
        }},
-      {:error, :empty_response}
+      {:error, :critical}
     )
 
-    assert_openai_no_fallback({:error, :timeout}, {:error, :timeout})
+    assert_openai_no_fallback({:error, :timeout}, {:error, :model_timeout})
   end
 
   test "handles client errors" do
     http_client = fn _url, _opts -> {:error, :timeout} end
 
-    assert {:error, :timeout} =
+    assert {:error, :model_timeout} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "ollama",
@@ -363,7 +363,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, :timeout} =
+    assert {:error, :model_timeout} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "openai",
@@ -374,11 +374,24 @@ defmodule BeaconAssistant.LLMClientTest do
              )
   end
 
+  test "normalizes Req transport timeout as model timeout" do
+    http_client = fn _url, _opts -> {:error, %Req.TransportError{reason: :timeout}} end
+
+    assert {:error, :model_timeout} =
+             LLMClient.complete("prompt",
+               http_client: http_client,
+               provider: "ollama",
+               endpoint: @ollama_endpoint,
+               model: "qwen3:14b",
+               timeout_ms: 12_345
+             )
+  end
+
   test "handles malformed and empty Ollama responses" do
     malformed = fn _url, _opts -> {:ok, %Req.Response{status: 200, body: %{"done" => true}}} end
     empty = fn _url, _opts -> {:ok, %Req.Response{status: 200, body: %{"response" => " "}}} end
 
-    assert {:error, :malformed_response} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: malformed,
                provider: "ollama",
@@ -387,7 +400,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, :empty_response} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: empty,
                provider: "ollama",
@@ -400,7 +413,7 @@ defmodule BeaconAssistant.LLMClientTest do
   test "requires Ollama endpoint model and timeout" do
     http_client = fn _url, _opts -> flunk("Ollama request should not be sent") end
 
-    assert {:error, :missing_endpoint} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "ollama",
@@ -408,7 +421,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, :missing_model} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "ollama",
@@ -416,7 +429,7 @@ defmodule BeaconAssistant.LLMClientTest do
                timeout_ms: 12_345
              )
 
-    assert {:error, :missing_timeout} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt",
                http_client: http_client,
                provider: "ollama",
@@ -478,11 +491,24 @@ defmodule BeaconAssistant.LLMClientTest do
       timeout_ms: 12_345
     ]
 
-    assert {:error, :malformed_response} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt", Keyword.merge(openai_opts, http_client: malformed))
 
-    assert {:error, :empty_response} =
+    assert {:error, :critical} =
              LLMClient.complete("prompt", Keyword.merge(openai_opts, http_client: empty))
+  end
+
+  test "converts HTTP client exceptions to critical errors" do
+    http_client = fn _url, _opts -> raise RuntimeError, "boom" end
+
+    assert {:error, :critical} =
+             LLMClient.complete("prompt",
+               http_client: http_client,
+               provider: "ollama",
+               endpoint: @ollama_endpoint,
+               model: "qwen3:14b",
+               timeout_ms: 12_345
+             )
   end
 
   test "does not use fallback model for Ollama provider" do

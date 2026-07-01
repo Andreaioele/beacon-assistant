@@ -12,12 +12,23 @@ defmodule BeaconAssistant.ChatbotPersistenceTest do
 
   test "persists successful answers with session sources title request id and metrics" do
     session_id = Ecto.UUID.generate()
-    build_context = fn -> {:ok, %{context: @context, sources: ["03-billing-and-refunds.md"]}} end
+
+    build_context = fn ->
+      {:ok,
+       %{
+         context: @context,
+         sources: ["03-billing-and-refunds.md", "04-account-and-security.md"]
+       }}
+    end
 
     complete = fn _prompt ->
       {:ok,
        %{
-         answer: "Billing renews monthly or annually.",
+         answer:
+           Jason.encode!(%{
+             answer: "Billing renews monthly or annually.",
+             sources: ["03-billing-and-refunds.md"]
+           }),
          provider: "openai",
          model_name: "gpt-test",
          input_tokens: 10,
@@ -40,6 +51,7 @@ defmodule BeaconAssistant.ChatbotPersistenceTest do
     assert exchange.status == "completed"
     assert exchange.chat_session_id == session_id
     assert exchange.sources == ["03-billing-and-refunds.md"]
+    refute "04-account-and-security.md" in exchange.sources
     assert exchange.model_name == "gpt-test"
     assert exchange.provider_request_id == "req_123"
     assert exchange.total_tokens == 17
@@ -70,7 +82,7 @@ defmodule BeaconAssistant.ChatbotPersistenceTest do
              )
 
     assert exchange.status == "failed"
-    assert exchange.answer == Chatbot.fallback_message(:llm)
+    assert exchange.answer == Chatbot.fallback_message(:model_timeout)
     assert exchange.error_reason == ":timeout"
     assert exchange.model_name == "gpt-test"
     assert exchange.response_time_ms == 15

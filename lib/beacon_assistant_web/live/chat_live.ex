@@ -1,7 +1,8 @@
 defmodule BeaconAssistantWeb.ChatLive do
   use BeaconAssistantWeb, :live_view
 
-  alias BeaconAssistant.{Chatbot, Conversations}
+  alias BeaconAssistant.{Chatbot, Conversations, ErrorHandling}
+  require Logger
 
   @impl true
   def mount(_params, session, socket) do
@@ -15,6 +16,7 @@ defmodule BeaconAssistantWeb.ChatLive do
         exchanges: exchanges,
         loading: false,
         error: nil,
+        client_online: true,
         form: to_form(%{"question" => ""}, as: :chat)
       )
 
@@ -26,6 +28,9 @@ defmodule BeaconAssistantWeb.ChatLive do
     question = String.trim(question)
 
     cond do
+      not socket.assigns.client_online ->
+        {:noreply, assign(socket, error: ErrorHandling.offline_message())}
+
       question == "" ->
         {:noreply, assign(socket, error: "Enter a question before sending.")}
 
@@ -43,9 +48,35 @@ defmodule BeaconAssistantWeb.ChatLive do
   end
 
   @impl true
+  def handle_event("network_status_changed", %{"online" => online}, socket)
+      when is_boolean(online) do
+    handle_network_status_changed(online, socket)
+  end
+
+  def handle_event("network_status_changed", %{online: online}, socket)
+      when is_boolean(online) do
+    handle_network_status_changed(online, socket)
+  end
+
+  defp handle_network_status_changed(online, socket) do
+    error =
+      cond do
+        not online -> ErrorHandling.offline_message()
+        socket.assigns.error == ErrorHandling.offline_message() -> nil
+        true -> socket.assigns.error
+      end
+
+    {:noreply, assign(socket, client_online: online, error: error)}
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
-    <main class="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-10">
+    <main
+      id="chat-live"
+      phx-hook="NetworkStatus"
+      class="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-10"
+    >
       <p class="text-sm font-semibold uppercase tracking-wide text-base-content/60">Beacon</p>
 
       <h1 class="mt-2 text-3xl font-semibold tracking-normal">
@@ -76,7 +107,7 @@ defmodule BeaconAssistantWeb.ChatLive do
             </p>
             <p class="mt-1 whitespace-pre-wrap text-sm leading-6">{exchange.answer}</p>
             <p :if={exchange.sources != []} class="mt-3 text-xs text-base-content/55">
-              Sources: {Enum.join(exchange.sources, ", ")}
+              Sources used: {Enum.join(exchange.sources, ", ")}
             </p>
           </div>
         </article>
@@ -91,10 +122,10 @@ defmodule BeaconAssistantWeb.ChatLive do
           value={@form[:question].value}
           type="text"
           placeholder="Ask about billing, 2FA, plans..."
-          disabled={@loading}
+          disabled={@loading || !@client_online}
           class="input input-bordered min-w-0 flex-1"
         />
-        <button type="submit" class="btn btn-primary shrink-0" disabled={@loading}>
+        <button type="submit" class="btn btn-primary shrink-0" disabled={@loading || !@client_online}>
           <span :if={!@loading}>Send</span>
           <span :if={@loading}>Asking...</span>
         </button>
@@ -104,7 +135,23 @@ defmodule BeaconAssistantWeb.ChatLive do
   end
 
   defp ask_and_assign(socket, question) do
-    case Chatbot.ask(question, chat_session_id: socket.assigns.chat_session_id) do
+    result =
+      try do
+        Chatbot.ask(question, chat_session_id: socket.assigns.chat_session_id)
+      rescue
+        exception ->
+          Logger.error("chat_live.ask_and_assign raised error=#{Exception.message(exception)}")
+          {:error, :critical}
+      catch
+        kind, reason ->
+          Logger.error(
+            "chat_live.ask_and_assign threw kind=#{inspect(kind)} reason=#{inspect(reason)}"
+          )
+
+          {:error, :critical}
+      end
+
+    case result do
       {:ok, exchange} ->
         assign(socket,
           exchanges: socket.assigns.exchanges ++ [exchange],
@@ -114,6 +161,9 @@ defmodule BeaconAssistantWeb.ChatLive do
 
       {:error, :empty_question} ->
         assign(socket, loading: false, error: "Enter a question before sending.")
+
+      {:error, :critical} ->
+        assign(socket, loading: false, error: ErrorHandling.critical_message())
     end
   end
 
